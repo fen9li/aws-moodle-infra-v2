@@ -1,0 +1,357 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description:  A stack for deploying moodle cluster. 
+              https://github.com/aws-samples/aws-refarch-wordpress
+              https://www.gosquared.com/blog/simple-high-availability-wordpress-hosting-on-aws
+
+Parameters:
+  env:
+    Description: Environment name to provision resources
+    Type: String
+    AllowedValues: ["dev", "prod"]
+    Default: dev
+  project:
+    Description: Project name to provision resources
+    Type: String
+    Default: moodle
+  VpcStackName:
+    Description: moodle vpc stack name
+    Type: String
+    AllowedValues: ["moodle-vpc-stack-dev", "moodle-vpc-stack-prod"]
+    Default: moodle-vpc-stack-dev
+
+  # efs parameter
+  MountPoint:
+    Description: The moodle instances mount point for the EFS volume
+    Type: String
+    Default: moodledata
+
+  # ec2 instance parameters
+  ImageId:
+    Description: AMI ID 
+    Type: String
+    Default: ami-08fdde86b93accf1c
+
+  KeyName:
+    Description: EC2 instance key name
+    Type: String
+    Default: moodle-keypair
+ 
+  # moodle instances parameters
+  MoodleInstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t3.nano
+
+  # bastion host parameter
+  BastionInstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t3.nano
+
+Resources:
+
+  # Bastion host
+  BastionHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageId
+      KeyName: !Ref KeyName
+      InstanceType: !Ref BastionInstanceType
+      SubnetId: 
+        Fn::ImportValue: 
+          !Join ['-', [!Ref 'VpcStackName', 'PublicSubnet0']]
+      SecurityGroupIds: 
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'BastionHostSG']]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          yum update -y
+          yum install -y mariadb
+          yum install -y nfs-utils
+          systemctl start nfs
+          systemctl enable nfs
+      Tags: 
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'BastionHost' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+
+  # Auto scaling group
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+      - !Ref InstanceRole
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: moodle-instance-role-policy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:DescribeAutoScalingInstances
+              - autoscaling:DescribePolicies
+              - autoscaling:UpdateAutoScalingGroup
+            Resource: '*'
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      Cooldown: 60
+      HealthCheckGracePeriod: 120
+      HealthCheckType: EC2
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MaxSize: 1
+      MinSize: 0
+      DesiredCapacity: 1
+      TargetGroupARNs: 
+        - !Ref PublicAlbTargetGroup
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'ASG' ] ]
+          PropagateAtLaunch: true
+      VPCZoneIdentifier: 
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'PrivateSubnet0']]
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'PrivateSubnet1']]
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT5M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        WaitOnResourceSignals: true
+        MaxBatchSize : 1
+        MinInstancesInService: 1
+        PauseTime: PT15M
+  AutoScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Cooldown: 60
+      PolicyType: SimpleScaling
+      ScalingAdjustment: 1
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            VolumeSize: 10
+            VolumeType: gp2
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId: !Ref ImageId
+      InstanceMonitoring: true
+      InstanceType: !Ref MoodleInstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'MoodleHostsSG']]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+
+          yum update -y
+          yum install -y nfs-utils
+          systemctl start nfs
+          systemctl enable nfs
+
+          yum install -y amazon-efs-utils
+          mkdir /moodledata
+          mount -t efs ${FileSystem}:/ /moodledata
+          
+          yum -y install httpd
+          systemctl start httpd
+          systemctl enable httpd
+             
+          amazon-linux-extras disable php7.2
+          amazon-linux-extras disable lamp-mariadb10.2-php7.2
+          amazon-linux-extras enable php7.3
+          yum -y install php-cli php-pdo php-fpm php-json php-mysqlnd
+          amazon-linux-extras disable php7.3
+          echo '<?php phpinfo(); ?>' > /var/www/html/phpinfo.php
+          systemctl restart httpd
+          
+          yum install -y aws-cfn-bootstrap
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}
+
+  # Public application load balancer
+  PublicAlb: 
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'PublicSubnet0']]
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'PublicSubnet1']]
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: 60
+      SecurityGroups:
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'PublicAlbSG']]
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'PublicAlb' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+
+  # A dummy target group is used to setup the ALB to just drop traffic
+  # initially, before any real service target groups have been added.
+  DummyTargetGroupPublic:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'drop-1']]
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: 
+        Fn::ImportValue: 
+          !Join ['-', [!Ref 'VpcStackName', 'Vpc']]
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'DummyTargetGroupPublic' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  PublicLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn:
+      - PublicAlb
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref 'DummyTargetGroupPublic'
+          Type: 'forward'
+      LoadBalancerArn: !Ref 'PublicAlb'
+      Port: 80
+      Protocol: HTTP
+
+  # A target group. This is used for keeping track of all the tasks, and
+  # what IP addresses / port numbers they have. You can query it yourself,
+  # to use the addresses yourself, but most often this target group is just
+  # connected to an application load balancer, or network load balancer, so
+  # it can automatically distribute traffic across all the targets.
+  PublicAlbTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /phpinfo.php
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !Join [ '-', [ !Ref 'project', !Ref 'env', 'TargetGroup' ] ]
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: 
+        Fn::ImportValue: 
+          !Join ['-', [!Ref 'VpcStackName', 'Vpc']]
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'TargetGroup' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+
+  # Create a rule on the load balancer for routing traffic to the target group
+  LoadBalancerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref 'PublicAlbTargetGroup'
+          Type: 'forward'
+      Conditions:
+        - Field: path-pattern
+          Values: [ '*' ]
+      ListenerArn: !Ref PublicLoadBalancerListener
+      Priority: 1 
+
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      PerformanceMode: generalPurpose
+      FileSystemTags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'FileSystem' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  MountTarget0:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref 'FileSystem'
+      SubnetId: 
+        Fn::ImportValue: 
+          !Join ['-', [!Ref 'VpcStackName', 'PrivateSubnet0']]
+      SecurityGroups:
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'MountTargetSG']]
+  MountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref 'FileSystem'
+      SubnetId: 
+        Fn::ImportValue: 
+          !Join ['-', [!Ref 'VpcStackName', 'PrivateSubnet1']]
+      SecurityGroups:
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'MountTargetSG']]
+
+Outputs:
+
+  FileSystemID:
+    Description: File system ID
+    Value: !Ref FileSystem
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'FileSystemID' ] ]  
+  MountTarget0ID:
+    Description: Mount target 0 ID
+    Value: !Ref MountTarget0
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'MountTarget0ID' ] ]
+  MountTarget1ID:
+    Description: Mount target 1 ID
+    Value: !Ref MountTarget1
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'MountTarget1ID' ] ]
+
+  PublicAlbName:
+    Value: !GetAtt PublicAlb.LoadBalancerName
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicAlbName' ] ]
+  PublicAlbDnsName:
+    Value: !GetAtt PublicAlb.DNSName
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicAlbDnsName' ] ]
+  PublicAlbHostname:
+    Value: !Join [ '', [ 'http://', !GetAtt PublicAlb.DNSName ] ]
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicAlbHostname' ] ]
+  PublicAlbTargetGroupArn:
+    Value: !Ref PublicAlbTargetGroup
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicAlbTargetGroupArn' ] ]

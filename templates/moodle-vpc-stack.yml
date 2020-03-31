@@ -1,0 +1,490 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description:  A stack for deploying moodle cluster. 
+              https://github.com/aws-samples/aws-refarch-wordpress
+              https://www.gosquared.com/blog/simple-high-availability-wordpress-hosting-on-aws
+
+Parameters:
+  env:
+    Description: Environment name to provision resources
+    Type: String
+    AllowedValues: ["dev", "prod"]
+    Default: dev
+  project:
+    Description: Project name to provision resources
+    Type: String
+    Default: moodle
+
+  # bastion host parameter
+  SSHLocation:
+    Description: ip address allowed to ssh login bastion host, use command 'curl checkip.amazonaws.com' to get your Internet facing ip address
+    Type: String
+    Default: '123.243.138.223/32'
+
+Mappings:
+  # Hard values for the subnet masks, both dev and prod environment. 
+  # These masks define the range of internal IP addresses that can be assigned.
+  # The VPC can have all IP's from 10.0.0.0 to 10.0.255.255
+  # There are ten subnets which cover the ranges:
+  #
+  # 10.10.10.0 - 10.10.10.255
+  # 10.10.11.0 - 10.10.11.255
+  # 10.10.12.0 - 10.10.12.255
+  # 10.10.13.0 - 10.10.13.255
+  # 10.11.20.0 - 10.11.20.255
+  # 10.11.21.0 - 10.11.21.255
+  # 10.11.22.0 - 10.11.22.255
+  # 10.11.23.0 - 10.11.23.255
+  #
+  # If you need more IP addresses (perhaps you have so many
+  # instances that you run out) then you can customize these
+  # ranges to add more
+  vpcCIDR:
+    dev: 
+      CIDR: "10.10.0.0/16"
+    prod: 
+      CIDR: "10.11.0.0/16"
+  PublicSubnet0CIDR: 
+    dev: 
+      CIDR: "10.10.10.0/24"
+    prod: 
+      CIDR: "10.11.20.0/24"
+  PublicSubnet1CIDR:
+    dev: 
+      CIDR: "10.10.12.0/24"
+    prod: 
+      CIDR: "10.11.22.0/24"
+  PrivateSubnet0CIDR: 
+    dev: 
+      CIDR: "10.10.11.0/24"
+    prod: 
+      CIDR: "10.11.21.0/24"
+  PrivateSubnet1CIDR:
+    dev: 
+      CIDR: "10.10.13.0/24"
+    prod: 
+      CIDR: "10.11.23.0/24"
+
+Resources:
+  # VPC in which containers will be networked.
+  # It has two public subnets, and two private subnets.
+  # We distribute the subnets across the first two available subnets
+  # for the region, for high availability.
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      CidrBlock: !FindInMap [vpcCIDR, !Ref env, CIDR]
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'vpc' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+
+  # Two public subnets, where containers can have public IP addresses
+  PublicSubnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 0
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap [PublicSubnet0CIDR, !Ref env, CIDR]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'PublicSubnet0' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 1
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap [PublicSubnet1CIDR, !Ref env, CIDR]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'PublicSubnet1' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+
+  # Two private subnets where containers will only have private
+  # IP addresses, and will only be reachable by other members of the
+  # VPC
+  PrivateSubnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 0
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap [PrivateSubnet0CIDR, !Ref env, CIDR]
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'PrivateSubnet0' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 1
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap [PrivateSubnet1CIDR, !Ref env, CIDR]
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'PrivateSubnet1' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  
+  # Setup networking resources for the public subnets. Containers
+  # in the public subnets have public IP addresses and the routing table
+  # sends network traffic via the internet gateway.
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties: 
+      Tags: 
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'InternetGateway' ] ]  
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  GatewayAttachement:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'VPC'
+      InternetGatewayId: !Ref 'InternetGateway'
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags: 
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'PublicRouteTable' ] ]  
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachement
+    Properties:
+      RouteTableId: !Ref 'PublicRouteTable'
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref 'InternetGateway'
+  PublicSubnet0RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet0
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  # Setup networking resources for the private subnets. Containers
+  # in these subnets have only private IP addresses, and must use a NAT
+  # gateway to talk to the internet. We launch two NAT gateways, one for
+  # each private subnet.
+  NatGateway0Attachment:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachement
+    Properties:
+      Domain: vpc
+      Tags: 
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'NatGateway0Attachment' ] ]  
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  NatGateway1Attachment:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachement
+    Properties:
+      Domain: vpc
+      Tags: 
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'NatGateway1Attachment' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  NatGateway0:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway0Attachment.AllocationId
+      SubnetId: !Ref PublicSubnet0
+      Tags: 
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'NatGateway0' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1Attachment.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags: 
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'NatGateway1' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  PrivateRouteTable0:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags: 
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'PrivateRouteTable0' ] ]  
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  PrivateRoute0:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable0
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway0
+  PrivateRouteTableOneAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable0
+      SubnetId: !Ref PrivateSubnet0
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags: 
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'PrivateRouteTable1' ] ]  
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  PrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+  PrivateRouteTable1Association:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  VpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt VpcFlowLogsRole.Arn
+      LogGroupName: !Join [ '', [ !Ref 'AWS::StackName', '-FlowLog' ] ]
+      ResourceId: !Ref VPC
+      ResourceType: VPC
+      TrafficType: ALL
+  VpcFlowLogsLogGroup:
+    Type: AWS::Logs::LogGroup
+  VpcFlowLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - vpc-flow-logs.amazonaws.com
+      Path: '/'
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource: '*'
+
+  ## Security groups
+  DbClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow connections to Database Cluster from moodle instances and bastion host
+      VpcId: !Ref VPC 
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'DatabaseSubnetGroup' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+      SecurityGroupIngress: 
+      - IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        SourceSecurityGroupId: !Ref 'MoodleHostsSecurityGroup'
+      - IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        SourceSecurityGroupId: !Ref 'BastionHostSecurityGroup'
+
+  # Public Alb Security Group
+  PublicAlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ALB
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+
+  # Bastion Host Security Group
+  BastionHostSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ssh login to the bastion host
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'BastionHostSG' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  BastionHostSecurityGroupIngressFromInternet:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from the Internet
+      GroupId: !Ref BastionHostSecurityGroup
+      CidrIp: !Ref SSHLocation
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+
+  # Moodle Hosts Security Group
+  MoodleHostsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to moodle hosts
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'MoodleHostsSG' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  MoodleHostsSecurityGroupIngressFromPublicALB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from the public ALB
+      GroupId: !Ref 'MoodleHostsSecurityGroup'
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref PublicAlbSecurityGroup
+  MoodleHostsSecurityGroupIngressFromSelf:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from other moodle hosts in the same security group
+      GroupId: !Ref 'MoodleHostsSecurityGroup'
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref 'MoodleHostsSecurityGroup'
+  MoodleHostsSecurityGroupIngressFromBastionHost:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from the bastion host
+      GroupId: !Ref 'MoodleHostsSecurityGroup'
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref BastionHostSecurityGroup
+
+  # EFS mount target Security Group
+  MountTargetSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Security group for mount target
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'MountTargetSG' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+  MountTargetSecurityGroupIngressFromBastionHost:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from the bastion host
+      GroupId: !Ref MountTargetSecurityGroup
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      SourceSecurityGroupId: !Ref 'BastionHostSecurityGroup'
+  MountTargetSecurityGroupIngressFromMoodleHosts:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from the moodle hosts
+      GroupId: !Ref MountTargetSecurityGroup
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      SourceSecurityGroupId: !Ref 'MoodleHostsSecurityGroup'
+
+Outputs:
+  
+  Vpc:
+    Value: !Ref VPC
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'Vpc' ] ]
+  PublicSubnet0:
+    Value: !Ref PublicSubnet0
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicSubnet0' ] ]
+  PublicSubnet1:
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicSubnet1' ] ]
+  PrivateSubnet0:
+    Value: !Ref PrivateSubnet0
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PrivateSubnet0' ] ]
+  PrivateSubnet1:
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PrivateSubnet1' ] ]
+  PublicSubnets:
+    Value: !Join [ ',', [ !Ref PublicSubnet0, !Ref PublicSubnet1 ] ]
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicSubnets' ] ]
+  PrivateSubnets:
+    Value: !Join [ ',', [ !Ref PrivateSubnet0, !Ref PrivateSubnet1 ] ]
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PrivateSubnets' ] ]
+  VpcFlowLog:
+    Value: !Ref VpcFlowLog
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'VpcFlowLog' ] ]
+
+  DbClusterSG:
+    Value: !Ref DbClusterSecurityGroup
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'DbClusterSG' ] ]
+  MountTargetSG:
+    Value: !Ref MountTargetSecurityGroup
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'MountTargetSG' ] ]
+  BastionHostSG:
+    Value: !Ref BastionHostSecurityGroup
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'BastionHostSG' ] ]
+  MoodleHostsSG:
+    Value: !Ref MoodleHostsSecurityGroup
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'MoodleHostsSG' ] ]
+  PublicAlbSG:
+    Value: !Ref PublicAlbSecurityGroup
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicAlbSG' ] ]
