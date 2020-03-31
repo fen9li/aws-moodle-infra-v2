@@ -30,21 +30,21 @@ jobs:
         env: dev
       run: |
         ./.github/bin/moodle-vpc-stack-exists.sh
-    - name: Create moodle efs stack if not exists, update stack if exists 
+    - name: Create moodle rds stack if not exists, update stack if exists 
       env:
-        stackName: moodle-efs-stack-dev
-        stackTemplateUrl: "http://moodle-stack-templates-home.s3.amazonaws.com/moodle-efs-stack.yml"
+        stackName: moodle-rds-stack-dev
+        stackTemplateUrl: "http://moodle-stack-templates-home.s3.amazonaws.com/moodle-rds-stack.yml"
+        env: dev
+        VpcStackName: moodle-vpc-stack-dev
+        DatabaseUsername: ${{ secrets.AWS_AURORA_ROOT_USERNAME }}
+        DatabasePassword: ${{ secrets.AWS_AURORA_ROOT_PASSWORD }}
+      run: |
+        ./.github/bin/moodle-rds-stack-exists.sh
+    - name: Create moodle core stack if not exists, update stack if exists 
+      env:
+        stackName: moodle-core-stack-dev
+        stackTemplateUrl: "http://moodle-stack-templates-home.s3.amazonaws.com/moodle-core-stack.yml"
         env: dev
         VpcStackName: moodle-vpc-stack-dev
       run: |
-        ./.github/bin/moodle-efs-stack-exists.sh
-#    - name: Create moodle rds stack if not exists, update stack if exists 
-#      env:
-#        stackName: moodle-rds-stack-dev
-#        stackTemplateUrl: "http://moodle-stack-templates-home.s3.amazonaws.com/moodle-rds-stack.yml"
-#        env: dev
-#        VpcStackName: moodle-vpc-stack-dev
-#        DatabaseUsername: ${{ secrets.AWS_AURORA_ROOT_USERNAME }}
-#        DatabasePassword: ${{ secrets.AWS_AURORA_ROOT_PASSWORD }}
-#      run: |
-#        ./.github/bin/moodle-rds-stack-exists.sh
+        ./.github/bin/moodle-core-stack-exists.sh

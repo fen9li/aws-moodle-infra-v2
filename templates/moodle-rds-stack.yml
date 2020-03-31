@@ -68,6 +68,21 @@ Resources:
         - Key: Createdby
           Value: !Ref 'AWS::StackName'
 
+  # DB instance parameter group
+  RDSDBParameterGroup: 
+    Type: AWS::RDS::DBParameterGroup
+    Properties: 
+      Description: Aurora DB instance Parameter Group for moodle
+      Family: aurora5.6
+      Parameters: 
+        innodb_file_format: Barracuda        
+        innodb_large_prefix: 1
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'RDSDBParameterGroup' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+
   DatabaseCluster:
     Type: AWS::RDS::DBCluster
     Properties:
@@ -93,6 +108,7 @@ Resources:
     Properties:
       Engine: aurora
       DBClusterIdentifier: !Ref DatabaseCluster
+      DBParameterGroupName: !Ref RDSDBParameterGroup
       DBInstanceClass: !FindInMap [DBInstanceClass, !Ref env, Type]
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
 
@@ -101,6 +117,7 @@ Resources:
     Properties:
       Engine: aurora
       DBClusterIdentifier: !Ref DatabaseCluster
+      DBParameterGroupName: !Ref RDSDBParameterGroup
       DBInstanceClass: !FindInMap [DBInstanceClass, !Ref env, Type]
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
 
