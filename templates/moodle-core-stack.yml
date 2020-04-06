@@ -44,6 +44,17 @@ Parameters:
     Type: String
     Default: t3.nano
 
+  ALBExistingCertArn:
+    Type: 'String'
+    Default: 'arn:aws:acm:ap-southeast-2:692083082426:certificate/54eca3ca-4204-4d5b-9214-d17380c238c3'
+
+Mappings:
+  DnsName:
+    dev: 
+      Name: dev.mymlearning.com
+    prod: 
+      Name: www.mymlearning.com
+
 Resources:
 
   # EFS
@@ -195,24 +206,11 @@ Resources:
           amazon-linux-extras disable php7.3
           systemctl restart httpd
 
-          if [ ! -d "${MountPoint}/code" ]; then 
-            cd ${MountPoint}
-            mkdir {code,data,conf}
-            yum install -y git
-            cd code
-            git clone -b develop https://github.com/fen9li/moodle.git .
-          fi
-
-          chown -R nobody.apache ${MountPoint}
-          chmod -R 777 ${MountPoint}
-          cp -ar /moodle/code/* /var/www/html
-          cp /moodle/conf/config.php /var/www/html
           echo '<?php phpinfo(); ?>' > /var/www/html/phpinfo.php
-          chown -R nobody.apache /var/www
-          chmod -R 777 /var/www
 
           yum install -y aws-cfn-bootstrap
           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}
+  
   # Public application load balancer
   PublicAlb: 
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
@@ -257,17 +255,49 @@ Resources:
           Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'DummyTargetGroupPublic' ] ]
         - Key: Createdby
           Value: !Ref 'AWS::StackName'
-  PublicLoadBalancerListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
+
+  PublicLoadBalancerListenerSSL:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
     DependsOn:
       - PublicAlb
     Properties:
       DefaultActions:
-        - TargetGroupArn: !Ref 'DummyTargetGroupPublic'
-          Type: 'forward'
+        - Type: 'forward'
+          TargetGroupArn: !Ref 'DummyTargetGroupPublic'
+      Certificates:
+        - CertificateArn: !Ref ALBExistingCertArn
+      SslPolicy: ELBSecurityPolicy-2016-08
       LoadBalancerArn: !Ref 'PublicAlb'
-      Port: 80
-      Protocol: HTTP
+      Port: 443
+      Protocol: HTTPS
+  
+  PublicLoadBalancerlistener:
+   Type: "AWS::ElasticLoadBalancingV2::Listener"
+   Properties:
+     DefaultActions:
+       - Type: 'redirect'
+         RedirectConfig:
+           Protocol: "HTTPS"
+           Port: "443"
+           Host: "#{host}"
+           Path: "/#{path}"
+           Query: "#{query}"
+           StatusCode: "HTTP_301"
+     LoadBalancerArn: !Ref 'PublicAlb'
+     Port: 80
+     Protocol: HTTP
+
+  # PublicLoadBalancerListener:
+  #   Type: AWS::ElasticLoadBalancingV2::Listener
+  #   DependsOn:
+  #     - PublicAlb
+  #   Properties:
+  #     DefaultActions:
+  #       - Type: 'forward'
+  #         TargetGroupArn: !Ref 'DummyTargetGroupPublic'
+  #     LoadBalancerArn: !Ref 'PublicAlb'
+  #     Port: 80
+  #     Protocol: HTTP
 
   # A target group. This is used for keeping track of all the tasks, and
   # what IP addresses / port numbers they have. You can query it yourself,
@@ -305,8 +335,21 @@ Resources:
       Conditions:
         - Field: path-pattern
           Values: [ '*' ]
-      ListenerArn: !Ref PublicLoadBalancerListener
+      ListenerArn: !Ref PublicLoadBalancerListenerSSL
       Priority: 1 
+
+  # Create DNS record set
+  DNS:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneName: mymlearning.com.
+      Comment: Zone mymlearning alias targeted to PublicAlb LoadBalancer.
+      RecordSets:
+      - Name: !Join ['.', [!FindInMap [DnsName, !Ref env, Name] , '' ]]
+        Type: A
+        AliasTarget:
+          HostedZoneId: !GetAtt 'PublicAlb.CanonicalHostedZoneID'
+          DNSName: !GetAtt 'PublicAlb.DNSName'
 
 Outputs:
   FileSystemID:
@@ -333,6 +376,10 @@ Outputs:
     Value: !GetAtt PublicAlb.DNSName
     Export:
       Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicAlbDnsName' ] ]
+  PublicAlbCanonicalHostedZoneID:
+    Value: !GetAtt PublicAlb.CanonicalHostedZoneID
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicAlbCanonicalHostedZoneID' ] ]
   PublicAlbHostname:
     Value: !Join [ '', [ 'http://', !GetAtt PublicAlb.DNSName ] ]
     Export:
@@ -341,3 +388,8 @@ Outputs:
     Value: !Ref PublicAlbTargetGroup
     Export:
       Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicAlbTargetGroupArn' ] ]
+
+  DNSRecordSetGroupName:
+    Value: !Ref DNS
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'DNSRecordSetGroupName' ] ]
