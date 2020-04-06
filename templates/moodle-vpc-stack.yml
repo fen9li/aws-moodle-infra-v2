@@ -28,7 +28,7 @@ Parameters:
   SSHLocation:
     Description: ip address allowed to ssh login bastion host, use command 'curl checkip.amazonaws.com' to get your Internet facing ip address
     Type: String
-    Default: '123.243.138.223/32'
+    Default: '0.0.0.0/0'
   BastionInstanceType:
     Description: EC2 instance type
     Type: String

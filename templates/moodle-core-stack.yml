@@ -21,12 +21,6 @@ Parameters:
     AllowedValues: ["moodle-vpc-stack-dev", "moodle-vpc-stack-prod"]
     Default: moodle-vpc-stack-dev
 
-  # efs parameter
-  MountPoint:
-    Description: The ec2 instances mount point for the EFS volume
-    Type: String
-    Default: '/moodle'
-
   # ec2 instance parameters
   ImageId:
     Description: AMI ID 
@@ -146,13 +140,13 @@ Resources:
     CreationPolicy:
       ResourceSignal:
         Count: 1
-        Timeout: PT15M
+        Timeout: PT59M
     UpdatePolicy:
       AutoScalingRollingUpdate:
         WaitOnResourceSignals: true
         MaxBatchSize : 1
         MinInstancesInService: 1
-        PauseTime: PT15M
+        PauseTime: PT59M
   AutoScalingPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
     Properties:
@@ -188,9 +182,6 @@ Resources:
           systemctl enable nfs
           yum install -y amazon-efs-utils
 
-          mkdir ${MountPoint}
-          mount -t efs ${FileSystem}:/ ${MountPoint}
-
           yum -y install httpd
           systemctl start httpd
           systemctl enable httpd
@@ -206,7 +197,22 @@ Resources:
           amazon-linux-extras disable php7.3
           systemctl restart httpd
 
+          mkdir /moodle
+          mount -t efs ${FileSystem}:/ /moodle  
+
+          if [ -f "/moodle/code/index.php" ]; then 
+            cp -ar /moodle/code/* /var/www/html
+          fi          
+          if [ -f "/moodle/conf/config.php" ]; then 
+            cp /moodle/conf/config.php /var/www/html/config.php
+          fi
+          if [ -f "/moodle/conf/.htaccess" ]; then 
+            cp /moodle/conf/.htaccess /var/www/html/.htaccess
+          fi
+          
           echo '<?php phpinfo(); ?>' > /var/www/html/phpinfo.php
+          chown -R nobody.apache /var/www
+          chmod -R 777 /var/www
 
           yum install -y aws-cfn-bootstrap
           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}
@@ -272,32 +278,20 @@ Resources:
       Protocol: HTTPS
   
   PublicLoadBalancerlistener:
-   Type: "AWS::ElasticLoadBalancingV2::Listener"
-   Properties:
-     DefaultActions:
-       - Type: 'redirect'
-         RedirectConfig:
-           Protocol: "HTTPS"
-           Port: "443"
-           Host: "#{host}"
-           Path: "/#{path}"
-           Query: "#{query}"
-           StatusCode: "HTTP_301"
-     LoadBalancerArn: !Ref 'PublicAlb'
-     Port: 80
-     Protocol: HTTP
-
-  # PublicLoadBalancerListener:
-  #   Type: AWS::ElasticLoadBalancingV2::Listener
-  #   DependsOn:
-  #     - PublicAlb
-  #   Properties:
-  #     DefaultActions:
-  #       - Type: 'forward'
-  #         TargetGroupArn: !Ref 'DummyTargetGroupPublic'
-  #     LoadBalancerArn: !Ref 'PublicAlb'
-  #     Port: 80
-  #     Protocol: HTTP
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      DefaultActions:
+        - Type: 'redirect'
+          RedirectConfig:
+            Protocol: "HTTPS"
+            Port: "443"
+            Host: "#{host}"
+            Path: "/#{path}"
+            Query: "#{query}"
+            StatusCode: "HTTP_301"
+      LoadBalancerArn: !Ref 'PublicAlb'
+      Port: 80
+      Protocol: HTTP
 
   # A target group. This is used for keeping track of all the tasks, and
   # what IP addresses / port numbers they have. You can query it yourself,
@@ -381,9 +375,13 @@ Outputs:
     Export:
       Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicAlbCanonicalHostedZoneID' ] ]
   PublicAlbHostname:
-    Value: !Join [ '', [ 'http://', !GetAtt PublicAlb.DNSName ] ]
+    Value: !Join [ '', [ 'https://', !GetAtt PublicAlb.DNSName ] ]
     Export:
       Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicAlbHostname' ] ]
+  PublicAlbHealthCheck:
+    Value: !Join [ '', [ 'https://', !GetAtt PublicAlb.DNSName, '/phpinfo.php' ] ]
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'PublicAlbHealthCheck' ] ]
   PublicAlbTargetGroupArn:
     Value: !Ref PublicAlbTargetGroup
     Export:
