@@ -177,6 +177,7 @@ Resources:
           #!/bin/bash -xe
 
           yum update -y
+          yum install -y gcc
           yum install -y nfs-utils
           systemctl start nfs
           systemctl enable nfs
@@ -185,21 +186,30 @@ Resources:
           yum -y install httpd
           systemctl start httpd
           systemctl enable httpd
+          
           amazon-linux-extras disable php7.2
           amazon-linux-extras disable lamp-mariadb10.2-php7.2
           amazon-linux-extras enable php7.3
           yum clean metadata
           amazon-linux-extras install -y php7.3
-          yum install -y php-xml php-pecl-zip php-gd php-intl php-mbstring php-xmlrpc php-soap php-opcache
+          yum install -y php-devel php-xml php-pecl-zip php-gd php-intl php-mbstring php-xmlrpc php-soap php-opcache
           sed -i 's/post_max_size = 8M/post_max_size = 1G/g' /etc/php.ini
           sed -i 's/upload_max_filesize = 2M/upload_max_filesize = 1G/g' /etc/php.ini
           sed -i 's/max_execution_time = 30/max_execution_time = 600/g' /etc/php.ini
           amazon-linux-extras disable php7.3
-          systemctl restart httpd
 
+          wget https://pecl.php.net/get/redis-5.2.1.tgz
+          tar -xvf redis-5.2.1.tgz
+          cd /redis-5.2.1
+          phpize
+          ./configure
+          make
+          make install
+          echo ';redis' >> /etc/php.d/60-redis.ini
+          echo 'extension=redis.so' >> /etc/php.d/60-redis.ini
+          systemctl restart httpd
           mkdir /moodle
           mount -t efs ${FileSystem}:/ /moodle  
-
           if [ -f "/moodle/code/index.php" ]; then 
             cp -ar /moodle/code/* /var/www/html
           fi          
