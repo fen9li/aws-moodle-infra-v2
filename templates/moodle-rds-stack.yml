@@ -2,8 +2,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description:  A stack for deploying moodle cluster. 
-              https://github.com/aws-samples/aws-refarch-wordpress
-              https://www.gosquared.com/blog/simple-high-availability-wordpress-hosting-on-aws
 
 Parameters:
   env:
@@ -49,10 +47,15 @@ Mappings:
       Type: 'db.t3.small'
     prod: 
       Type: 'db.t3.small'
+  CacheNodeType:
+    dev: 
+      Type: 'cache.t2.micro'
+    prod: 
+      Type: 'cache.t2.micro'
 
 Resources:
 
-  # rds aurora db cluster
+  # rds aurora db cluster Subnet Group
   DatabaseSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
@@ -121,6 +124,35 @@ Resources:
       DBInstanceClass: !FindInMap [DBInstanceClass, !Ref env, Type]
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
 
+  # Redis cache cluster Subnet Group
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: Redis Cache Subnet Group
+      SubnetIds: 
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'PrivateSubnet0']]
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'PrivateSubnet1']]
+
+  RedisCacheCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      AutoMinorVersionUpgrade: 'true'
+      Engine: 'redis'
+      CacheNodeType: !FindInMap [CacheNodeType, !Ref env, Type]
+      ClusterName : !Join [ '-', [ !Ref 'project', !Ref 'env', 'RedisCacheCluster' ] ]
+      NumCacheNodes: 1
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      VpcSecurityGroupIds:
+        - Fn::ImportValue: 
+            !Join ['-', [!Ref 'VpcStackName', 'RedisClusterSG']]
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'RedisCacheCluster' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+
 Outputs:
 
   DBClusterName:
@@ -143,3 +175,24 @@ Outputs:
     Value: !GetAtt 'DatabaseCluster.ReadEndpoint.Address'
     Export:
       Name: !Join [ '-', [ !Ref 'AWS::StackName', 'ReadEndpointAddress' ] ]
+
+  RedisCacheClusterArn:
+    Description: Redis Cache Cluster Arn
+    Value: !Sub arn:aws:elasticache:${AWS::Region}:${AWS::AccountId}:cluster/${RedisCacheCluster}
+    Export:
+      Name: !Sub ${AWS::StackName}-RedisCacheClusterArn
+  RedisCacheClusterId:
+    Description: Redis Cache Cluster ID
+    Value: !Ref RedisCacheCluster
+    Export:
+      Name: !Sub ${AWS::StackName}-RedisCacheClusterId
+  RedisCacheAddress:
+    Description: Redis Cache endpoint address
+    Value: !GetAtt RedisCacheCluster.RedisEndpoint.Address
+    Export:
+      Name: !Sub ${AWS::StackName}-RedisCacheAddress
+  RedisCachePort:
+    Description: Redis Cache endpoint port
+    Value: !GetAtt RedisCacheCluster.RedisEndpoint.Port
+    Export:
+      Name: !Sub ${AWS::StackName}-RedisCachePort

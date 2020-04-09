@@ -325,6 +325,29 @@ Resources:
                 Resource: '*'
 
   ## Security groups
+
+  # Redis Security Group
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ElastiCache Security Group
+      VpcId: !Ref VPC 
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref 'MoodleHostsSecurityGroup'
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref 'BastionHostSecurityGroup'
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'RedisSG' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+
+  # Aurora Database Security Group
   DbClusterSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -332,18 +355,18 @@ Resources:
       VpcId: !Ref VPC 
       Tags:
         - Key: Name
-          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'DatabaseSubnetGroup' ] ]
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'DbClusterSG' ] ]
         - Key: Createdby
           Value: !Ref 'AWS::StackName'
       SecurityGroupIngress: 
-      - IpProtocol: tcp
-        FromPort: 3306
-        ToPort: 3306
-        SourceSecurityGroupId: !Ref 'MoodleHostsSecurityGroup'
-      - IpProtocol: tcp
-        FromPort: 3306
-        ToPort: 3306
-        SourceSecurityGroupId: !Ref 'BastionHostSecurityGroup'
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref 'MoodleHostsSecurityGroup'
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref 'BastionHostSecurityGroup'
 
   # Public Alb Security Group
   PublicAlbSecurityGroup:
@@ -360,6 +383,12 @@ Resources:
           ToPort: 80
           CidrIp: 0.0.0.0/0
       VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref 'project', !Ref 'env', 'PublicAlbSG' ] ]
+        - Key: Createdby
+          Value: !Ref 'AWS::StackName'
+
 
   # Bastion Host Security Group
   BastionHostSecurityGroup:
@@ -507,6 +536,10 @@ Outputs:
     Export:
       Name: !Join [ '-', [ !Ref 'AWS::StackName', 'VpcFlowLog' ] ]
 
+  RedisClusterSG:
+    Value: !Ref RedisSecurityGroup
+    Export:
+      Name: !Join [ '-', [ !Ref 'AWS::StackName', 'RedisClusterSG' ] ]
   DbClusterSG:
     Value: !Ref DbClusterSecurityGroup
     Export:
