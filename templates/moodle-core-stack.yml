@@ -223,6 +223,7 @@ Resources:
           echo '<?php phpinfo(); ?>' > /var/www/html/phpinfo.php
           chown -R nobody.apache /var/www
           chmod -R 777 /var/www
+          echo '*/1 * * * * /usr/bin/php  /var/www/html/admin/cli/cron.php >/dev/null' >> /var/spool/cron/apache
 
           yum install -y aws-cfn-bootstrap
           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}
